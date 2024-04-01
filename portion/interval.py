@@ -1,3 +1,4 @@
+from copy import deepcopy
 import warnings
 
 from collections import namedtuple
@@ -7,7 +8,7 @@ from .const import Bound, inf
 Atomic = namedtuple("Atomic", ["left", "lower", "upper", "right"])
 
 
-def mergeable(a, b):
+def mergeable(a, b, merge_on_adjacent:bool=True):
     """
     Tester whether two atomic intervals can be merged (i.e. they overlap or
     are adjacent).
@@ -20,7 +21,7 @@ def mergeable(a, b):
         "This function is deprecated, use Interval._mergeable instead.",
         DeprecationWarning,
     )
-    return Interval._mergeable(a, b)
+    return Interval._mergeable(a, b, merge_on_adjacent=merge_on_adjacent)
 
 
 class Interval:
@@ -32,16 +33,22 @@ class Interval:
     instances to __init__.
     """
 
-    __slots__ = ("_intervals",)
+    __slots__ = ("_intervals", "_merge_on_adjacent")
     __match_args__ = ("left", "lower", "upper", "right")
 
-    def __init__(self, *intervals):
+    def __init__(self, *intervals, merge_on_adjacent:bool=True, enable_auto_simplification:bool=True):
         """
         Create a disjunction of zero, one or more intervals.
 
         :param intervals: zero, one or more intervals.
+        :param merge_on_adjacent: bool - if True, intervals that are adjacent but not overlapping are merged. Otherwise only overlapping intervals are merged.
+        :param enable_auto_simplification: bool - If True, intervals are simplified automatically.
+        
+        
         """
         self._intervals = list()
+        self._merge_on_adjacent = merge_on_adjacent
+        
 
         for interval in intervals:
             if isinstance(interval, Interval):
@@ -51,49 +58,12 @@ class Interval:
                 raise TypeError("Parameters must be Interval instances")
 
         if len(self._intervals) > 0:
-            # Sort intervals by lower bound, closed first.
-            self._intervals.sort(key=lambda i: (i.lower, i.left is Bound.OPEN))
-
-            i = 0
-            # Try to merge consecutive intervals
-            while i < len(self._intervals) - 1:
-                current = self._intervals[i]
-                successor = self._intervals[i + 1]
-
-                if self.__class__._mergeable(current, successor):
-                    if current.lower == successor.lower:
-                        lower = current.lower
-                        left = (
-                            current.left
-                            if current.left == Bound.CLOSED
-                            else successor.left
-                        )
-
-                    else:
-                        lower = min(current.lower, successor.lower)
-                        left = (
-                            current.left if lower == current.lower else successor.left
-                        )
-
-                    if current.upper == successor.upper:
-                        upper = current.upper
-                        right = (
-                            current.right
-                            if current.right == Bound.CLOSED
-                            else successor.right
-                        )
-                    else:
-                        upper = max(current.upper, successor.upper)
-                        right = (
-                            current.right if upper == current.upper else successor.right
-                        )
-
-                    union = Atomic(left, lower, upper, right)
-                    self._intervals.pop(i)  # pop current
-                    self._intervals.pop(i)  # pop successor
-                    self._intervals.insert(i, union)
-                else:
-                    i = i + 1
+            if enable_auto_simplification:
+                # sorting is done in _simplify:
+                self._intervals = self.__class__._simplify(self._intervals, merge_on_adjacent=merge_on_adjacent)
+            else:
+                # Sort intervals by lower bound, closed first.
+                self._intervals.sort(key=lambda i: (i.lower, i.left is Bound.OPEN))
 
     @classmethod
     def from_atomic(cls, left, lower, upper, right):
@@ -117,7 +87,7 @@ class Interval:
         return instance
 
     @classmethod
-    def _mergeable(cls, a, b):
+    def _mergeable(cls, a, b, merge_on_adjacent:bool=True):
         """
         Tester whether two atomic intervals can be merged (i.e. they overlap or
         are adjacent).
@@ -126,15 +96,100 @@ class Interval:
         :param b: an atomic interval.
         :return: True if mergeable, False otherwise.
         """
-        if a.lower < b.lower or (a.lower == b.lower and a.left == Bound.CLOSED):
+        if (a.lower < b.lower) or (a.lower == b.lower and a.left == Bound.CLOSED):
             first, second = a, b
         else:
             first, second = b, a
 
-        if first.upper == second.lower:
+        if ((first.upper == second.lower) and merge_on_adjacent):
+            ## Adjacent case, in Epochs I don't want to merge on this, I'd rather push them apart slightly if they cause overlap errors.
             return first.right == Bound.CLOSED or second.left == Bound.CLOSED
 
-        return first.upper > second.lower
+        return first.upper > second.lower # overlap
+
+    @classmethod
+    def _simplify(cls, intervals_list: list, merge_on_adjacent:bool=True):
+        """ Try to merge consecutive intervals
+        
+        pure, does not modify `intervals_list`
+        
+        simplified_intervals_list
+        
+        
+        """
+        simplified_intervals_list = deepcopy(intervals_list)
+        
+        if len(simplified_intervals_list) > 0:
+            # Sort intervals by lower bound, closed first.
+            simplified_intervals_list.sort(key=lambda i: (i.lower, i.left is Bound.OPEN))
+
+            i = 0
+            # Try to merge consecutive intervals
+            while i < len(simplified_intervals_list) - 1:
+                current = simplified_intervals_list[i]
+                successor = simplified_intervals_list[i + 1]
+
+                if cls._mergeable(current, successor, merge_on_adjacent=merge_on_adjacent):
+                    # is mergable:
+                    if current.lower == successor.lower:
+                        ## same lower bound
+                        lower = current.lower
+                        left = (
+                            current.left
+                            if current.left == Bound.CLOSED
+                            else successor.left
+                        )
+
+                    else:
+                        ## different lower bound
+                        lower = min(current.lower, successor.lower)
+                        left = (
+                            current.left if lower == current.lower else successor.left
+                        )
+
+                    if current.upper == successor.upper:
+                        ## same upper bound
+                        upper = current.upper
+                        right = (
+                            current.right
+                            if current.right == Bound.CLOSED
+                            else successor.right
+                        )
+                    else:
+                        upper = max(current.upper, successor.upper)
+                        right = (
+                            current.right if upper == current.upper else successor.right
+                        )
+
+                    union = Atomic(left, lower, upper, right)
+                    simplified_intervals_list.pop(i)  # pop current
+                    simplified_intervals_list.pop(i)  # pop successor
+                    simplified_intervals_list.insert(i, union)
+                else:
+                    ## otherwise not mergable, just advance to the next index
+                    i = i + 1
+
+        return simplified_intervals_list
+    
+
+    def simplify(self, merge_on_adjacent:bool=True, inplace:bool=False):
+        """ Try to merge consecutive intervals
+        
+        pure, does not modify `intervals_list`
+        
+        simplified_intervals_list
+        
+        
+        """
+        if inplace:
+            simplified_intervals_list = deepcopy(self._intervals)
+            self._intervals = self.__class__._simplify(simplified_intervals_list, merge_on_adjacent=merge_on_adjacent) ## assign immediately, return None
+            return None
+            
+        else:
+            simplified_intervals_list = deepcopy(self._intervals)
+            return self.__class__._simplify(simplified_intervals_list, merge_on_adjacent=merge_on_adjacent) # return the simplified intervals
+
 
     @property
     def left(self):
@@ -687,13 +742,13 @@ class AbstractDiscreteInterval(Interval):
         return super().from_atomic(left, lower, upper, right)
 
     @classmethod
-    def _mergeable(cls, a, b):
+    def _mergeable(cls, a, b, merge_on_adjacent:bool=True):
         if a.upper <= b.upper:
             first, second = a, b
         else:
             first, second = b, a
 
-        if first.right == Bound.CLOSED and first.upper < second.lower:
+        if (first.right == Bound.CLOSED) and (first.upper < second.lower):
             first = Atomic(
                 first.left,
                 first.lower,
@@ -701,4 +756,4 @@ class AbstractDiscreteInterval(Interval):
                 Bound.OPEN,
             )
 
-        return super()._mergeable(first, second)
+        return super()._mergeable(first, second, merge_on_adjacent=merge_on_adjacent)

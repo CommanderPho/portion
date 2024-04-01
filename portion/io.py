@@ -151,7 +151,7 @@ def to_string(
 
 
 def from_data(
-    data, conv=None, *, pinf=float("inf"), ninf=float("-inf"), klass=Interval
+    data, conv=None, *, pinf=float("inf"), ninf=float("-inf"), klass=Interval, **kwargs
 ):
     """
     Import an interval from a list of 4-uples (left, lower, upper, right).
@@ -184,7 +184,7 @@ def from_data(
                 Bound(right),
             )
         )
-    return klass(*intervals)
+    return klass(*intervals, **kwargs)
 
 
 def to_data(interval, conv=None, *, pinf=float("inf"), ninf=float("-inf")):
